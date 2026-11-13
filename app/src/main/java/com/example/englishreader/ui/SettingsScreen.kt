@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,10 +37,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.example.englishreader.R
 import com.example.englishreader.data.HomeBackground
 import com.example.englishreader.data.ReaderSettings
 import com.example.englishreader.data.TtsEngine
@@ -62,6 +67,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val engines by speaker.systemEngines.collectAsState()
     val engineLabel by speaker.engineLabel.collectAsState()
+    val versionName = remember {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+    }
 
     LaunchedEffect(settings.ttsEngine, settings.systemTtsPackage) {
         speaker.prepare(settings)
@@ -209,8 +217,55 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(Modifier.height(18.dp))
+            Text("关于", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "一款极简风的英语阅读与翻译工具",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { openGithub(context) }
+                    .padding(vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_github),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("GitHub 项目主页", style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "›",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "当前版本：v$versionName",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(28.dp))
         }
     }
+}
+
+private const val GITHUB_URL = "https://github.com/Lkjdk467/EnglishReader"
+
+private fun openGithub(context: Context) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL))
+    runCatching { context.startActivity(intent) }
+        .onFailure { Toast.makeText(context, "没有找到可用的浏览器", Toast.LENGTH_SHORT).show() }
 }
 
 private fun releaseBackgroundPermission(context: Context, uri: String?) {
