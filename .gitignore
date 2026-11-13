@@ -1,0 +1,42 @@
+# ---------- Android / Gradle ----------
+.gradle/
+build/
+**/build/
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+*.hprof
+local.properties
+*.iml
+.idea/
+
+# ---------- 签名与密钥 ----------
+# 发布签名、密钥库、本地 API Key 配置一律不要提交
+*.jks
+*.keystore
+*.p12
+keystore.properties
+signing.properties
+api.properties
+secrets.properties
+.env
+.env.*
+!/.env.example
+
+# ---------- 构建产物 ----------
+*.apk
+*.aab
+*.ap_
+*.dex
+app/release/
+release/
+
+# ---------- 系统 / 编辑器 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.swp
+.vscode/
+.fleet/
