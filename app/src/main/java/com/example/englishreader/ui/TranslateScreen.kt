@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -31,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -53,11 +56,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.englishreader.R
 import com.example.englishreader.data.DictionaryRepository
 import com.example.englishreader.data.ReaderSettings
 import com.example.englishreader.data.TranslateDirection
@@ -139,6 +145,20 @@ fun TranslateScreen(
         }
         if (!started && settings.ttsEngine == TtsEngine.SYSTEM) {
             Toast.makeText(context, "语音引擎还没准备好，请稍后再试", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 依次朗读单词、每条例句的英文和中文。 */
+    fun speakAll(info: WordInfo) {
+        val onMessage: (String) -> Unit = { message ->
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
+        scope.launch {
+            speaker.speakAwait(info.word, Locale.US, settings, onMessage)
+            info.examples.forEach { example ->
+                speaker.speakAwait(example.english, Locale.US, settings, onMessage)
+                example.chinese?.let { speaker.speakAwait(it, Locale.CHINA, settings, onMessage) }
+            }
         }
     }
 
@@ -323,7 +343,7 @@ fun TranslateScreen(
                 Spacer(Modifier.height(6.dp))
                 ResultCard {
                     if (word != null) {
-                        WordCard(word)
+                        WordCard(word, onSpeak = { text, locale -> speak(text, locale) })
                     } else {
                         LookupText(text = translated.orEmpty(), onWordClick = { pickedWord = it })
                     }
@@ -339,7 +359,7 @@ fun TranslateScreen(
                     FilledTonalButton(
                         onClick = {
                             if (word != null) {
-                                speak(word.word, Locale.US)
+                                speakAll(word)
                             } else {
                                 speak(
                                     text = translated.orEmpty(),
@@ -349,7 +369,7 @@ fun TranslateScreen(
                         },
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text("朗读译文")
+                        Text(if (word != null) "全部朗读" else "朗读译文")
                     }
                 }
                 StopSpeechButton(speechState) { speaker.stop() }
@@ -387,9 +407,12 @@ private fun ResultCard(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun WordCard(info: WordInfo) {
+private fun WordCard(info: WordInfo, onSpeak: (String, Locale) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(info.word, style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(info.word, style = MaterialTheme.typography.headlineSmall)
+            SpeakIcon { onSpeak(info.word, Locale.US) }
+        }
 
         val phonetics = listOfNotNull(
             info.phoneticUk?.let { "英" to it },
@@ -438,13 +461,24 @@ private fun WordCard(info: WordInfo) {
             )
             info.examples.forEach { example ->
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(example.english, style = MaterialTheme.typography.bodyMedium)
-                    example.chinese?.let {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = example.english,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
                         )
+                        SpeakIcon { onSpeak(example.english, Locale.US) }
+                    }
+                    example.chinese?.let { chinese ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = chinese,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            SpeakIcon { onSpeak(chinese, Locale.CHINA) }
+                        }
                     }
                 }
             }
@@ -458,7 +492,7 @@ private fun WordCard(info: WordInfo) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             info.phrases.forEach { phrase ->
-                Row {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = phrase.phrase,
                         style = MaterialTheme.typography.bodyMedium,
@@ -471,10 +505,27 @@ private fun WordCard(info: WordInfo) {
                         textAlign = TextAlign.End,
                         modifier = Modifier.weight(1f),
                     )
+                    SpeakIcon { onSpeak(phrase.phrase, Locale.US) }
                 }
             }
         }
     }
+}
+
+/** 小喇叭：只负责朗读，点击事件在这里被消费，不会传给下方的查词手势。 */
+@Composable
+private fun SpeakIcon(onClick: () -> Unit) {
+    Icon(
+        painter = painterResource(R.drawable.ic_volume_up),
+        contentDescription = "朗读",
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .padding(start = 6.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .padding(6.dp)
+            .size(18.dp),
+    )
 }
 
 @Composable
