@@ -16,10 +16,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.example.englishreader.R
 import dev.chrisbanes.haze.HazeState
 
-enum class HomeTab { SHELF, TRANSLATE }
+enum class HomeTab { SHELF, TRANSLATE, MORE }
 
 @Composable
 fun HomeBottomBar(selected: HomeTab, hazeState: HazeState?, onSelect: (HomeTab) -> Unit) {
@@ -55,6 +57,17 @@ fun HomeBottomBar(selected: HomeTab, hazeState: HazeState?, onSelect: (HomeTab) 
                 onClick = { onSelect(HomeTab.TRANSLATE) },
                 icon = { Icon(Icons.Filled.Create, contentDescription = null) },
                 label = { Text("翻译") },
+            )
+            NavigationBarItem(
+                selected = selected == HomeTab.MORE,
+                onClick = { onSelect(HomeTab.MORE) },
+                icon = {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_more_horiz),
+                        contentDescription = null,
+                    )
+                },
+                label = { Text("更多") },
             )
         }
     }

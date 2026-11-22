@@ -106,6 +106,7 @@ fun BookshelfScreen(
     onOpenNote: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTranslate: () -> Unit,
+    onOpenMore: () -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -221,7 +222,11 @@ fun BookshelfScreen(
                 },
                 bottomBar = {
                     HomeBottomBar(selected = HomeTab.SHELF, hazeState = hazeState) { tab ->
-                        if (tab == HomeTab.TRANSLATE) onOpenTranslate()
+                        when (tab) {
+                            HomeTab.TRANSLATE -> onOpenTranslate()
+                            HomeTab.MORE -> onOpenMore()
+                            HomeTab.SHELF -> Unit
+                        }
                     }
                 },
             ) { padding ->

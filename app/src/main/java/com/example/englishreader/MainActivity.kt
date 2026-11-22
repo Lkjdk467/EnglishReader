@@ -37,8 +37,10 @@ import com.example.englishreader.data.VocabularyStore
 import com.example.englishreader.tts.Speaker
 import com.example.englishreader.ui.BookshelfScreen
 import com.example.englishreader.ui.EnglishReaderTheme
+import com.example.englishreader.ui.MoreScreen
 import com.example.englishreader.ui.NanSplashOverlay
 import com.example.englishreader.ui.NoteScreen
+import com.example.englishreader.ui.PhoneticsScreen
 import com.example.englishreader.ui.ReaderScreen
 import com.example.englishreader.ui.SettingsScreen
 import com.example.englishreader.ui.SupportScreen
@@ -93,6 +95,8 @@ class MainActivity : ComponentActivity() {
 private sealed interface Screen {
     data object Shelf : Screen
     data object Translate : Screen
+    data object More : Screen
+    data object Phonetics : Screen
     data object Vocabulary : Screen
     data object Note : Screen
     data object Settings : Screen
@@ -193,6 +197,7 @@ private fun EnglishReaderApp() {
                 onOpenNote = { screen = Screen.Note },
                 onOpenSettings = { screen = Screen.Settings },
                 onOpenTranslate = { screen = Screen.Translate },
+                onOpenMore = { screen = Screen.More },
             )
         }
 
@@ -203,8 +208,23 @@ private fun EnglishReaderApp() {
                 speaker = speaker,
                 vocabulary = vocabulary,
                 onOpenShelf = { screen = Screen.Shelf },
+                onOpenMore = { screen = Screen.More },
             )
         }
+
+        Screen.More -> tabState.SaveableStateProvider("more") {
+            MoreScreen(
+                onOpenShelf = { screen = Screen.Shelf },
+                onOpenTranslate = { screen = Screen.Translate },
+                onOpenPhonetics = { screen = Screen.Phonetics },
+            )
+        }
+
+        Screen.Phonetics -> PhoneticsScreen(
+            settings = settings,
+            speaker = speaker,
+            onBack = { screen = Screen.More },
+        )
 
         Screen.Settings -> SettingsScreen(
             settings = settings,
