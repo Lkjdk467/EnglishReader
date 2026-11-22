@@ -51,6 +51,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.englishreader.data.DictionaryRepository
@@ -76,7 +79,10 @@ fun TranslateScreen(
     val scope = rememberCoroutineScope()
     val speechState by speaker.state.collectAsState()
 
-    var input by rememberSaveable { mutableStateOf("") }
+    var inputField by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue())
+    }
+    val input = inputField.text
     var result by rememberSaveable { mutableStateOf<String?>(null) }
     var direction by rememberSaveable { mutableStateOf(TranslateDirection.EN_TO_ZH) }
     var translating by remember { mutableStateOf(false) }
@@ -84,6 +90,12 @@ fun TranslateScreen(
     var editing by rememberSaveable { mutableStateOf(true) }
     var pendingFocus by remember { mutableStateOf(false) }
     val inputFocus = remember { FocusRequester() }
+
+    val selection = inputField.selection
+    val selectedText = input.substring(
+        selection.min.coerceIn(0, input.length),
+        selection.max.coerceIn(0, input.length),
+    ).trim()
 
     LaunchedEffect(editing, pendingFocus) {
         if (editing && pendingFocus) {
@@ -113,6 +125,27 @@ fun TranslateScreen(
         Toast.makeText(context, "已复制译文", Toast.LENGTH_SHORT).show()
     }
 
+    fun translate(text: String) {
+        if (text.isEmpty()) return
+        val detected = detectTranslateDirection(text)
+        translating = true
+        scope.launch {
+            val translated = repository.translate(text, settings, detected)
+            translating = false
+            if (translated == null) {
+                Toast.makeText(context, "翻译失败，请检查网络", Toast.LENGTH_SHORT).show()
+            } else {
+                direction = detected
+                result = translated
+                editing = false
+            }
+        }
+    }
+
+    fun clearSelection() {
+        inputField = inputField.copy(selection = TextRange(input.length))
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -139,8 +172,8 @@ fun TranslateScreen(
         ) {
             if (editing) {
                 OutlinedTextField(
-                    value = input,
-                    onValueChange = { input = it },
+                    value = inputField,
+                    onValueChange = { inputField = it },
                     label = { Text("输入内容") },
                     placeholder = { Text("输入中文自动译成英文，输入英文自动译成中文") },
                     minLines = 6,
@@ -160,6 +193,7 @@ fun TranslateScreen(
                         onClick = {
                             editing = true
                             pendingFocus = true
+                            clearSelection()
                         },
                     ) {
                         Text("编辑")
@@ -175,25 +209,43 @@ fun TranslateScreen(
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Button(
-                onClick = {
-                    val text = input.trim()
-                    if (text.isEmpty()) return@Button
-                    val detected = detectTranslateDirection(text)
-                    translating = true
-                    scope.launch {
-                        val translated = repository.translate(text, settings, detected)
-                        translating = false
-                        if (translated == null) {
-                            Toast.makeText(context, "翻译失败，请检查网络", Toast.LENGTH_SHORT).show()
-                        } else {
-                            direction = detected
-                            result = translated
-                            editing = false
+            if (editing && selectedText.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                val singleWord = selectedWordRegex.matches(selectedText)
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = selectedText,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = {
+                                if (singleWord) {
+                                    pickedWord = selectedText
+                                    clearSelection()
+                                } else {
+                                    translate(selectedText)
+                                }
+                            },
+                        ) {
+                            Text(if (singleWord) "查词" else "翻译")
                         }
                     }
-                },
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = { translate(input.trim()) },
                 enabled = input.isNotBlank() && !translating,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -265,6 +317,8 @@ fun TranslateScreen(
         )
     }
 }
+
+private val selectedWordRegex = Regex("[A-Za-z][A-Za-z'’\\-]*")
 
 @Composable
 private fun LookupText(
