@@ -18,13 +18,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -35,6 +41,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,11 +55,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +71,7 @@ import com.example.englishreader.data.ReaderSettings
 import com.example.englishreader.data.TranslateDirection
 import com.example.englishreader.data.TtsEngine
 import com.example.englishreader.data.VocabularyStore
+import com.example.englishreader.data.WordInfo
 import com.example.englishreader.data.detectTranslateDirection
 import com.example.englishreader.tts.Speaker
 import kotlinx.coroutines.launch
@@ -84,6 +95,9 @@ fun TranslateScreen(
     }
     val input = inputField.text
     var result by rememberSaveable { mutableStateOf<String?>(null) }
+    var wordQuery by rememberSaveable { mutableStateOf<String?>(null) }
+    var wordInfo by remember { mutableStateOf<WordInfo?>(null) }
+    var lookupSeq by remember { mutableStateOf(0) }
     var direction by rememberSaveable { mutableStateOf(TranslateDirection.EN_TO_ZH) }
     var translating by remember { mutableStateOf(false) }
     var pickedWord by remember { mutableStateOf<String?>(null) }
@@ -96,6 +110,15 @@ fun TranslateScreen(
         selection.min.coerceIn(0, input.length),
         selection.max.coerceIn(0, input.length),
     ).trim()
+
+    LaunchedEffect(wordQuery, lookupSeq) {
+        val query = wordQuery
+        if (query == null) {
+            wordInfo = null
+            return@LaunchedEffect
+        }
+        wordInfo = repository.lookup(query, settings)
+    }
 
     LaunchedEffect(editing, pendingFocus) {
         if (editing && pendingFocus) {
@@ -127,6 +150,7 @@ fun TranslateScreen(
 
     fun translate(text: String) {
         if (text.isEmpty()) return
+        wordQuery = null
         val detected = detectTranslateDirection(text)
         translating = true
         scope.launch {
@@ -139,6 +163,20 @@ fun TranslateScreen(
                 result = translated
                 editing = false
             }
+        }
+    }
+
+    /** 单个英文单词走词典查词，其余文本走双向翻译。 */
+    fun submit(text: String) {
+        if (text.isEmpty()) return
+        if (singleWordRegex.matches(text)) {
+            result = null
+            wordInfo = null
+            wordQuery = text
+            lookupSeq++
+            editing = false
+        } else {
+            translate(text)
         }
     }
 
@@ -171,16 +209,24 @@ fun TranslateScreen(
                 .padding(horizontal = 20.dp, vertical = 8.dp),
         ) {
             if (editing) {
-                OutlinedTextField(
-                    value = inputField,
-                    onValueChange = { inputField = it },
-                    label = { Text("输入内容") },
-                    placeholder = { Text("输入中文自动译成英文，输入英文自动译成中文") },
-                    minLines = 6,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(inputFocus),
-                )
+                // 关掉 Compose 默认的绿色光标手柄，保持输入框干净。
+                CompositionLocalProvider(
+                    LocalTextSelectionColors provides TextSelectionColors(
+                        handleColor = Color.Transparent,
+                        backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                    ),
+                ) {
+                    OutlinedTextField(
+                        value = inputField,
+                        onValueChange = { inputField = it },
+                        label = { Text("输入内容") },
+                        placeholder = { Text("输入中文自动译成英文，输入英文自动译成中文") },
+                        minLines = 6,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(inputFocus),
+                    )
+                }
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -211,7 +257,7 @@ fun TranslateScreen(
             }
             if (editing && selectedText.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                val singleWord = selectedWordRegex.matches(selectedText)
+                val singleWord = singleWordRegex.matches(selectedText)
                 Surface(
                     color = MaterialTheme.colorScheme.secondaryContainer,
                     shape = RoundedCornerShape(12.dp),
@@ -245,7 +291,7 @@ fun TranslateScreen(
             }
             Spacer(Modifier.height(14.dp))
             Button(
-                onClick = { translate(input.trim()) },
+                onClick = { submit(input.trim()) },
                 enabled = input.isNotBlank() && !translating,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -254,45 +300,52 @@ fun TranslateScreen(
                 Text(if (translating) "翻译中…" else "翻译")
             }
 
+            val word = wordInfo
             val translated = result
-            if (translated != null) {
+            if (wordQuery != null && word == null) {
+                Spacer(Modifier.height(22.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text("查询中…", style = MaterialTheme.typography.bodyMedium)
+                }
+            } else if (word != null || translated != null) {
                 Spacer(Modifier.height(22.dp))
                 Text(
-                    text = if (direction == TranslateDirection.EN_TO_ZH) {
-                        "译文 · 英 → 中"
-                    } else {
-                        "译文 · 中 → 英 · 点击单词可查词"
+                    text = when {
+                        word != null -> "查词 · 单词释义"
+                        direction == TranslateDirection.EN_TO_ZH -> "译文 · 英 → 中"
+                        else -> "译文 · 中 → 英 · 点击单词可查词"
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Box(Modifier.padding(14.dp)) {
-                        LookupText(
-                            text = translated,
-                            onWordClick = { pickedWord = it },
-                        )
+                ResultCard {
+                    if (word != null) {
+                        WordCard(word)
+                    } else {
+                        LookupText(text = translated.orEmpty(), onWordClick = { pickedWord = it })
                     }
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(
-                        onClick = { copy(translated) },
+                        onClick = { copy(word?.translation ?: word?.word ?: translated.orEmpty()) },
                         modifier = Modifier.weight(1f),
                     ) {
                         Text("复制译文")
                     }
                     FilledTonalButton(
                         onClick = {
-                            speak(
-                                text = translated,
-                                locale = if (direction == TranslateDirection.EN_TO_ZH) Locale.CHINA else Locale.US,
-                            )
+                            if (word != null) {
+                                speak(word.word, Locale.US)
+                            } else {
+                                speak(
+                                    text = translated.orEmpty(),
+                                    locale = if (direction == TranslateDirection.EN_TO_ZH) Locale.CHINA else Locale.US,
+                                )
+                            }
                         },
                         modifier = Modifier.weight(1f),
                     ) {
@@ -318,7 +371,140 @@ fun TranslateScreen(
     }
 }
 
-private val selectedWordRegex = Regex("[A-Za-z][A-Za-z'’\\-]*")
+private val singleWordRegex = Regex("[A-Za-z][A-Za-z'’\\-]*")
+private val posTagRegex = Regex("^([A-Za-z]{1,6}\\.)\\s*(.+)$")
+
+@Composable
+private fun ResultCard(content: @Composable () -> Unit) {
+    Surface(
+        color = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(Modifier.padding(16.dp)) { content() }
+    }
+}
+
+@Composable
+private fun WordCard(info: WordInfo) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(info.word, style = MaterialTheme.typography.headlineSmall)
+
+        val phonetics = listOfNotNull(
+            info.phoneticUk?.let { "英" to it },
+            info.phoneticUs?.let { "美" to it },
+        ).ifEmpty {
+            listOfNotNull(info.phoneticGeneral?.let { "音标" to it })
+        }
+        if (phonetics.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                phonetics.forEach { (label, value) ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "/${value.trim('/')}/",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        val definitions = info.translation?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+        if (definitions.isEmpty()) {
+            Text(
+                text = "未查到中文释义，请检查网络后重试",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            definitions.forEach { DefinitionLine(it) }
+        }
+
+        if (info.examples.isNotEmpty()) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text(
+                text = "例句",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            info.examples.forEach { example ->
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(example.english, style = MaterialTheme.typography.bodyMedium)
+                    example.chinese?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (info.phrases.isNotEmpty()) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text(
+                text = "常用短语",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            info.phrases.forEach { phrase ->
+                Row {
+                    Text(
+                        text = phrase.phrase,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = phrase.meaning.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DefinitionLine(line: String) {
+    val match = posTagRegex.find(line)
+    if (match == null) {
+        Text(line, style = MaterialTheme.typography.bodyLarge)
+        return
+    }
+    Row(verticalAlignment = Alignment.Top) {
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = RoundedCornerShape(6.dp),
+        ) {
+            Text(
+                text = match.groupValues[1],
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = match.groupValues[2],
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
 
 @Composable
 private fun LookupText(

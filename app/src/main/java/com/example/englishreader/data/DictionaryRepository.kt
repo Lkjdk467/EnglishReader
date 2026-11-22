@@ -167,7 +167,8 @@ class DictionaryRepository {
     private fun lookupYoudaoWeb(word: String): WordInfo? {
         val url = "https://dict.youdao.com/jsonapi?q=${URLEncoder.encode(word, "UTF-8")}"
         val body = httpGet(url) ?: return null
-        val entry = JSONObject(body).optJSONObject("ec")?.optJSONArray("word")?.optJSONObject(0) ?: return null
+        val json = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        val entry = json.optJSONObject("ec")?.optJSONArray("word")?.optJSONObject(0) ?: return null
 
         val translation = entry.optJSONArray("trs")?.let { trs ->
             (0 until trs.length()).flatMap trsLoop@ { index ->
@@ -187,7 +188,52 @@ class DictionaryRepository {
         val uk = entry.optString("ukphone").takeIf { it.isNotBlank() }
         val us = entry.optString("usphone").takeIf { it.isNotBlank() }
         if (translation == null && uk == null && us == null) return null
-        return WordInfo(word = word, phoneticUk = uk, phoneticUs = us, translation = translation)
+
+        val examples = json.optJSONObject("blng_sents_part")
+            ?.optJSONArray("sentence-pair")
+            ?.let { pairs ->
+                (0 until pairs.length()).mapNotNull { index ->
+                    val pair = pairs.optJSONObject(index) ?: return@mapNotNull null
+                    val english = pair.optString("sentence").trim()
+                    if (english.isEmpty()) return@mapNotNull null
+                    val chinese = pair.optString("sentence-translation").trim()
+                    WordExample(english, chinese.takeIf { it.isNotEmpty() })
+                }
+            }
+            .orEmpty()
+            .take(3)
+
+        val phrases = json.optJSONObject("phrs")
+            ?.optJSONArray("phrs")
+            ?.let { list ->
+                (0 until list.length()).mapNotNull { index ->
+                    val phr = list.optJSONObject(index)?.optJSONObject("phr") ?: return@mapNotNull null
+                    val phrase = phr.optJSONObject("headword")
+                        ?.optJSONObject("l")
+                        ?.optString("i")
+                        ?.trim()
+                        .orEmpty()
+                    if (phrase.isEmpty()) return@mapNotNull null
+                    val meaning = phr.optJSONArray("trs")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("tr")
+                        ?.optJSONObject("l")
+                        ?.optString("i")
+                        ?.trim()
+                    WordPhrase(phrase, meaning?.takeIf { it.isNotEmpty() })
+                }
+            }
+            .orEmpty()
+            .take(6)
+
+        return WordInfo(
+            word = word,
+            phoneticUk = uk,
+            phoneticUs = us,
+            translation = translation,
+            examples = examples,
+            phrases = phrases,
+        )
     }
 
     private fun lookupFallbackWeb(word: String): WordInfo {
