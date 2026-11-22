@@ -5,7 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,10 +31,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,7 +44,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextLayoutResult
@@ -73,6 +81,16 @@ fun TranslateScreen(
     var direction by rememberSaveable { mutableStateOf(TranslateDirection.EN_TO_ZH) }
     var translating by remember { mutableStateOf(false) }
     var pickedWord by remember { mutableStateOf<String?>(null) }
+    var editing by rememberSaveable { mutableStateOf(true) }
+    var pendingFocus by remember { mutableStateOf(false) }
+    val inputFocus = remember { FocusRequester() }
+
+    LaunchedEffect(editing, pendingFocus) {
+        if (editing && pendingFocus) {
+            inputFocus.requestFocus()
+            pendingFocus = false
+        }
+    }
 
     BackHandler(onBack = onOpenShelf)
 
@@ -119,14 +137,44 @@ fun TranslateScreen(
                 .imePadding()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
         ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
-                label = { Text("输入内容") },
-                placeholder = { Text("输入中文自动译成英文，输入英文自动译成中文") },
-                minLines = 6,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (editing) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    label = { Text("输入内容") },
+                    placeholder = { Text("输入中文自动译成英文，输入英文自动译成中文") },
+                    minLines = 6,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(inputFocus),
+                )
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "输入内容 · 点击单词可查词",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = {
+                            editing = true
+                            pendingFocus = true
+                        },
+                    ) {
+                        Text("编辑")
+                    }
+                }
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Box(Modifier.padding(14.dp)) {
+                        LookupText(text = input, onWordClick = { pickedWord = it })
+                    }
+                }
+            }
             Spacer(Modifier.height(14.dp))
             Button(
                 onClick = {
@@ -142,6 +190,7 @@ fun TranslateScreen(
                         } else {
                             direction = detected
                             result = translated
+                            editing = false
                         }
                     }
                 },
@@ -172,9 +221,8 @@ fun TranslateScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Box(Modifier.padding(14.dp)) {
-                        TranslationText(
+                        LookupText(
                             text = translated,
-                            clickable = direction == TranslateDirection.ZH_TO_EN,
                             onWordClick = { pickedWord = it },
                         )
                     }
@@ -219,32 +267,34 @@ fun TranslateScreen(
 }
 
 @Composable
-private fun TranslationText(
+private fun LookupText(
     text: String,
-    clickable: Boolean,
     onWordClick: (String) -> Unit,
 ) {
     var layout by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodyLarge,
-        lineHeight = 26.sp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(
-                if (clickable) {
-                    Modifier.pointerInput(text) {
-                        detectTapGestures { position ->
-                            val result = layout ?: return@detectTapGestures
-                            val offset = result.getOffsetForPosition(position)
-                            val range = wordRangeAt(text, offset) ?: return@detectTapGestures
-                            onWordClick(text.substring(range.first, range.last + 1))
+    SelectionContainer {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            lineHeight = 26.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(text) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val up = waitForUpOrCancellation() ?: return@awaitEachGesture
+                        // 长按交给 SelectionContainer 做选择复制，这里只处理轻点。
+                        if (up.uptimeMillis - down.uptimeMillis > viewConfiguration.longPressTimeoutMillis) {
+                            return@awaitEachGesture
                         }
+                        up.consume()
+                        val result = layout ?: return@awaitEachGesture
+                        val offset = result.getOffsetForPosition(down.position)
+                        val range = wordRangeAt(text, offset) ?: return@awaitEachGesture
+                        onWordClick(text.substring(range.first, range.last + 1))
                     }
-                } else {
-                    Modifier
-                }
-            ),
-        onTextLayout = { layout = it },
-    )
+                },
+            onTextLayout = { layout = it },
+        )
+    }
 }
