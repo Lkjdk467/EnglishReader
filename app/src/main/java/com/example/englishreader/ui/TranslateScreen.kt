@@ -118,7 +118,7 @@ fun TranslateScreen(
             wordInfo = null
             return@LaunchedEffect
         }
-        wordInfo = repository.lookup(query, settings)
+        wordInfo = repository.lookup(query)
     }
 
     LaunchedEffect(editing, pendingFocus) {

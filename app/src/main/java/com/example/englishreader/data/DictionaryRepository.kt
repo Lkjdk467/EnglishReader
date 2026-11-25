@@ -21,22 +21,18 @@ class DictionaryRepository {
     private val wordCache = HashMap<String, WordInfo>()
     private val sentenceCache = HashMap<String, String>()
 
-    suspend fun lookup(word: String, settings: ReaderSettings): WordInfo = withContext(Dispatchers.IO) {
-        val key = cacheKey(word, settings)
-        wordCache[key]?.let { return@withContext it }
+    /**
+     * 查词只走词典接口。整句翻译接口不参与单词释义，
+     * 否则 "had" 会被 MyMemory 译成「对话中。」这类无关内容。
+     */
+    suspend fun lookup(word: String): WordInfo = withContext(Dispatchers.IO) {
+        val cleaned = cleanQuery(word)
+        if (cleaned.isEmpty()) return@withContext WordInfo(cleaned)
+        val query = queryForm(cleaned)
+        wordCache[query]?.let { return@withContext it.copy(word = cleaned) }
 
-        val info = if (settings.engine == TranslateEngine.BAIDU && settings.hasBaidu) {
-            runCatching { lookupBaidu(word, settings) }.getOrNull()
-        } else {
-            null
-        } ?: if (ApiConfig.hasYoudao) {
-            runCatching { lookupYoudao(word) }.getOrNull()
-        } else {
-            null
-        } ?: runCatching { lookupYoudaoWeb(word) }.getOrNull()
-            ?: runCatching { lookupFallbackWeb(word) }.getOrElse { WordInfo(word) }
-
-        wordCache[key] = info
+        val info = buildWordInfo(query)?.copy(word = cleaned) ?: WordInfo(word = cleaned)
+        wordCache[query] = info
         info
     }
 
@@ -63,21 +59,6 @@ class DictionaryRepository {
 
         result?.let { sentenceCache[key] = it }
         result
-    }
-
-    private fun lookupBaidu(word: String, settings: ReaderSettings): WordInfo? {
-        val baidu = translateBaidu(word, settings, TranslateDirection.EN_TO_ZH) ?: return null
-        val youdao = runCatching { lookupYoudaoWeb(word) }.getOrNull()
-        val phonetics = youdao ?: runCatching { fetchPhonetics(word) }.getOrNull()?.let {
-            WordInfo(word, it.uk, it.us, it.general)
-        }
-        return WordInfo(
-            word = word,
-            phoneticUk = phonetics?.phoneticUk,
-            phoneticUs = phonetics?.phoneticUs,
-            phoneticGeneral = phonetics?.phoneticGeneral,
-            translation = youdao?.translation ?: baidu,
-        )
     }
 
     private fun translateBaidu(
@@ -170,21 +151,7 @@ class DictionaryRepository {
         val json = runCatching { JSONObject(body) }.getOrNull() ?: return null
         val entry = json.optJSONObject("ec")?.optJSONArray("word")?.optJSONObject(0) ?: return null
 
-        val translation = entry.optJSONArray("trs")?.let { trs ->
-            (0 until trs.length()).flatMap trsLoop@ { index ->
-                val trList = trs.optJSONObject(index)?.optJSONArray("tr")
-                    ?: return@trsLoop emptyList()
-                (0 until trList.length()).flatMap { trIndex ->
-                    val lines = trList.optJSONObject(trIndex)
-                        ?.optJSONObject("l")
-                        ?.optJSONArray("i")
-                        ?: return@flatMap emptyList()
-                    (0 until lines.length()).mapNotNull { line ->
-                        lines.optString(line).trim().takeIf { it.isNotEmpty() }
-                    }
-                }
-            }
-        }?.distinct()?.takeIf { it.isNotEmpty() }?.joinToString("\n")
+        val translation = sanitizeTranslation(youdaoLines(entry).joinToString("\n"))
         val uk = entry.optString("ukphone").takeIf { it.isNotBlank() }
         val us = entry.optString("usphone").takeIf { it.isNotBlank() }
         if (translation == null && uk == null && us == null) return null
@@ -236,16 +203,147 @@ class DictionaryRepository {
         )
     }
 
-    private fun lookupFallbackWeb(word: String): WordInfo {
-        val phonetics = runCatching { fetchPhonetics(word) }.getOrNull()
-        val translation = runCatching { fetchMyMemory(word, TranslateDirection.EN_TO_ZH) }.getOrNull()
-        return WordInfo(
-            word = word,
-            phoneticUk = phonetics?.uk,
-            phoneticUs = phonetics?.us,
-            phoneticGeneral = phonetics?.general,
-            translation = translation,
+    /** 有道的轻量词典接口，作为 jsonapi 失败时的第二个来源，避免回退到机器翻译。 */
+    private fun lookupYoudaoSuggest(word: String): WordInfo? {
+        val url = "https://dict.youdao.com/suggest?num=5&ver=3.0&doctype=json&cache=false&le=eng&q=" +
+            URLEncoder.encode(word, "UTF-8")
+        val body = httpGet(url) ?: return null
+        val entries = runCatching { JSONObject(body) }.getOrNull()
+            ?.optJSONObject("data")
+            ?.optJSONArray("entries")
+            ?: return null
+        for (index in 0 until entries.length()) {
+            val entry = entries.optJSONObject(index) ?: continue
+            if (!entry.optString("entry").equals(word, ignoreCase = true)) continue
+            val explain = entry.optString("explain").removeSuffix("...").removeSuffix("…")
+            val translation = sanitizeTranslation(explain) ?: continue
+            return WordInfo(word = word, translation = translation)
+        }
+        return null
+    }
+
+    /**
+     * 依次尝试：有道 jsonapi → 有道 suggest → 词形还原后的原形。
+     * 返回 null 表示没有拿到可信的词典释义，调用方会显示「未查到」。
+     */
+    private fun buildWordInfo(query: String): WordInfo? {
+        val direct = runCatching { lookupYoudaoWeb(query) }.getOrNull()
+        if (direct?.translation != null) return fillPhonetics(direct, query)
+
+        val brief = runCatching { lookupYoudaoSuggest(query) }.getOrNull()
+        if (brief?.translation != null) {
+            val merged = direct?.copy(translation = brief.translation) ?: brief
+            return fillPhonetics(merged, query)
+        }
+
+        for (lemma in lemmas(query)) {
+            val base = runCatching { lookupYoudaoWeb(lemma) }.getOrNull()?.takeIf { it.translation != null }
+                ?: runCatching { lookupYoudaoSuggest(lemma) }.getOrNull()?.takeIf { it.translation != null }
+            if (base != null) return fillPhonetics(base, lemma)
+        }
+
+        return (direct ?: brief)?.let { fillPhonetics(it, query) }
+    }
+
+    /** 有道没给音标时，用 dictionaryapi.dev 补齐；查不到原形时再试一次词形还原。 */
+    private fun fillPhonetics(info: WordInfo, query: String): WordInfo {
+        if (info.phoneticUk != null || info.phoneticUs != null || info.phoneticGeneral != null) return info
+        val phonetics = runCatching { fetchPhonetics(query) }.getOrNull()
+            ?: lemmas(query).firstNotNullOfOrNull { lemma -> runCatching { fetchPhonetics(lemma) }.getOrNull() }
+            ?: return info
+        return info.copy(
+            phoneticUk = phonetics.uk,
+            phoneticUs = phonetics.us,
+            phoneticGeneral = phonetics.general,
         )
+    }
+
+    /**
+     * 首字母大写的普通单词按小写查询，避免 "One" 命中人名条目；
+     * 全大写单词同样降为小写，只有 "I" 保持原样。
+     */
+    private fun queryForm(word: String): String {
+        if (word == "I") return word
+        val lower = word.lowercase(Locale.US)
+        val allCaps = word.length > 1 && word.all { !it.isLetter() || it.isUpperCase() }
+        val capitalized = lower.replaceFirstChar { it.uppercase(Locale.US) }
+        return if (word == capitalized || allCaps) lower else word
+    }
+
+    /** 去掉选区里可能带上的引号、标点，避免 "had," 之类的查询打出空结果。 */
+    private fun cleanQuery(word: String): String = word.trim()
+        .trim('"', '\'', '“', '”', '‘', '’', '.', ',', '!', '?', ';', ':', '(', ')', '[', ']', '…', '—', ' ', '\n', '\t')
+
+    /** 常见不规则变化 + 简单后缀规则；有道本身会标注多数词形，这里只作为兜底。 */
+    private fun lemmas(word: String): List<String> {
+        val lower = word.lowercase(Locale.US)
+        val result = LinkedHashSet<String>()
+        irregularLemmas[lower]?.let { result.add(it) }
+
+        fun add(stem: String) {
+            if (stem.length >= 2 && stem != lower) result.add(stem)
+        }
+
+        if (lower.endsWith("ies") && lower.length > 4) add(lower.dropLast(3) + "y")
+        if (lower.endsWith("ied") && lower.length > 4) add(lower.dropLast(3) + "y")
+        if (lower.endsWith("ing") && lower.length > 5) {
+            val stem = lower.dropLast(3)
+            if (stem.length > 2 && stem.last() == stem[stem.length - 2]) add(stem.dropLast(1))
+            add(stem)
+            add(stem + "e")
+        }
+        if (lower.endsWith("ed") && lower.length > 4) {
+            val stem = lower.dropLast(2)
+            if (stem.length > 2 && stem.last() == stem[stem.length - 2]) add(stem.dropLast(1))
+            add(stem)
+            add(stem + "e")
+        }
+        if (lower.endsWith("es") && lower.length > 3) {
+            add(lower.dropLast(2))
+            add(lower.dropLast(1))
+        }
+        if (lower.endsWith("s") && lower.length > 3 && !lower.endsWith("ss")) add(lower.dropLast(1))
+        if (lower.endsWith("er") && lower.length > 4) {
+            add(lower.dropLast(2))
+            add(lower.dropLast(2) + "e")
+        }
+        if (lower.endsWith("est") && lower.length > 5) {
+            add(lower.dropLast(3))
+            add(lower.dropLast(3) + "e")
+        }
+        return result.take(4)
+    }
+
+    /** 词典释义行：丢弃整句翻译和明显的占位内容。 */
+    private fun sanitizeTranslation(raw: String?): String? {
+        val lines = raw?.lines().orEmpty()
+            .map { it.trim().trim(';', '；', ' ') }
+            .filter { it.isNotEmpty() }
+            .filter { line ->
+                line !in junkTranslations &&
+                    !(sentenceEndings.any { line.endsWith(it) } &&
+                        partOfSpeechPrefixes.none { line.startsWith(it) })
+            }
+            .distinct()
+        return lines.takeIf { it.isNotEmpty() }?.joinToString("\n")
+    }
+
+    private fun youdaoLines(entry: JSONObject): List<String> {
+        val trs = entry.optJSONArray("trs") ?: return emptyList()
+        return (0 until trs.length()).flatMap trsLoop@ { index ->
+            val trList = trs.optJSONObject(index)?.optJSONArray("tr") ?: return@trsLoop emptyList()
+            (0 until trList.length()).flatMap { trIndex ->
+                val line = trList.optJSONObject(trIndex)?.optJSONObject("l") ?: return@flatMap emptyList()
+                val items = line.optJSONArray("i")
+                if (items != null) {
+                    (0 until items.length()).mapNotNull { item ->
+                        items.optString(item).trim().takeIf { it.isNotEmpty() }
+                    }
+                } else {
+                    listOfNotNull(line.optString("i").trim().takeIf { it.isNotEmpty() })
+                }
+            }
+        }
     }
 
     private fun translateMyMemory(text: String, direction: TranslateDirection): String? {
@@ -353,9 +451,6 @@ class DictionaryRepository {
     private fun youdaoLang(direction: TranslateDirection): Pair<String, String> =
         if (direction == TranslateDirection.EN_TO_ZH) "en" to "zh-CHS" else "zh-CHS" to "en"
 
-    private fun cacheKey(word: String, settings: ReaderSettings): String =
-        "${settings.engine}:${settings.baiduAppId}:${settings.baiduAppKey.hashCode()}:${word.lowercase(Locale.US)}"
-
     private fun truncateQuery(text: String): String =
         if (text.length <= 20) text else text.take(10) + text.length + text.takeLast(10)
 
@@ -375,5 +470,39 @@ class DictionaryRepository {
         const val TIMEOUT_MS = 8000
         const val YOUDAO_API = "https://openapi.youdao.com/api"
         const val BAIDU_API = "https://fanyi-api.baidu.com/api/trans/vip/translate"
+
+        val sentenceEndings = listOf("。", "！", "？", "!")
+        val partOfSpeechPrefixes = listOf(
+            "n.", "v.", "vt.", "vi.", "adj.", "adv.", "prep.", "pron.", "conj.", "num.",
+            "art.", "int.", "aux.", "abbr.", "det.", "modal", "phr.", "【",
+        )
+        val junkTranslations = setOf("对话中", "对话中。", "翻译中", "翻译中。", "正在翻译")
+
+        val irregularLemmas = mapOf(
+            "had" to "have", "has" to "have", "having" to "have",
+            "was" to "be", "were" to "be", "been" to "be", "is" to "be", "are" to "be", "am" to "be",
+            "did" to "do", "does" to "do", "done" to "do",
+            "went" to "go", "gone" to "go",
+            "said" to "say", "made" to "make", "took" to "take", "taken" to "take",
+            "came" to "come", "saw" to "see", "seen" to "see",
+            "got" to "get", "gotten" to "get", "gave" to "give", "given" to "give",
+            "knew" to "know", "known" to "know", "thought" to "think",
+            "found" to "find", "told" to "tell", "became" to "become",
+            "left" to "leave", "felt" to "feel", "brought" to "bring",
+            "began" to "begin", "begun" to "begin", "kept" to "keep",
+            "held" to "hold", "wrote" to "write", "written" to "write",
+            "stood" to "stand", "heard" to "hear", "meant" to "mean",
+            "met" to "meet", "ran" to "run", "paid" to "pay", "sat" to "sit",
+            "spoke" to "speak", "spoken" to "speak",
+            "led" to "lead", "grew" to "grow", "grown" to "grow",
+            "lost" to "lose", "fell" to "fall", "fallen" to "fall",
+            "sent" to "send", "built" to "build", "understood" to "understand",
+            "drew" to "draw", "drawn" to "draw", "broke" to "break", "broken" to "break",
+            "spent" to "spend", "rose" to "rise", "risen" to "rise",
+            "drove" to "drive", "driven" to "drive", "bought" to "buy",
+            "wore" to "wear", "worn" to "wear", "chose" to "choose", "chosen" to "choose",
+            "children" to "child", "men" to "man", "women" to "woman",
+            "feet" to "foot", "teeth" to "tooth", "mice" to "mouse", "geese" to "goose",
+        )
     }
 }

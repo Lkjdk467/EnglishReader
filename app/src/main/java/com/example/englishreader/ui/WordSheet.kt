@@ -125,7 +125,7 @@ fun WordSheet(
                     translation = repository.translate(word, settings, detectTranslateDirection(word)),
                 )
             } else {
-                repository.lookup(word, settings)
+                repository.lookup(word)
             },
         )
     }

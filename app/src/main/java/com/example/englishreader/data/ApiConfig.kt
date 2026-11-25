@@ -3,7 +3,8 @@ package com.example.englishreader.data
 /**
  * 有道智云文本翻译 API：https://ai.youdao.com
  * 申请应用后，把应用的 App Key / App Secret 填到这里，查询就会自动走有道。
- * 留空时使用免费的 dictionaryapi.dev（音标）+ MyMemory（中文释义）。
+ * 留空时使用有道网页词典接口查词，音标缺失时由 dictionaryapi.dev 补齐；
+ * 整句翻译走有道 / MyMemory，不再用整句翻译结果冒充单词释义。
  */
 object ApiConfig {
     const val YOUDAO_APP_KEY = ""
